@@ -1,5 +1,8 @@
 build/
 install/
 
+checkpoints/
+data/
+
 .DS_Store
 ._*

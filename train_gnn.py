@@ -3,7 +3,7 @@ import dgl
 import torch.nn.functional as F
 import random
 
-from data_reader import data_train, data_test, num_node_features, num_edge_features, num_node_outputs
+from data_graph import data_train, data_test, num_node_features, num_edge_features, num_node_outputs
 from model import TimingGCN
 
 from sklearn.metrics import r2_score
@@ -51,6 +51,6 @@ def train(model):
             print('saved model')
 
 if __name__ == '__main__':
-    model.load_state_dict(torch.load('./checkpoints/01_netdelaylog/1599.pth'))
-    test(model)
-    # train(model)
+    # model.load_state_dict(torch.load('./checkpoints/01_netdelaylog/1599.pth'))
+    # test(model)
+    train(model)

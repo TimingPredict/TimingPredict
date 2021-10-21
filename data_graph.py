@@ -6,7 +6,7 @@ random.seed(8026728)
 
 available_data = 'blabla usb_cdc_core BM64 jpeg_encoder salsa20 usbf_device aes128 wbqspiflash aes192 cic_decimator xtea aes256 des spm y_huff aes_cipher picorv32a synth_ram zipdiv genericfir usb'.split()
 
-data = {k: dgl.load_graphs('data/{}.graph.bin'.format(k))[0][0].to('cuda')
+data = {k: dgl.load_graphs('data/2_nomag_netedge/{}.graph.bin'.format(k))[0][0].to('cuda')
         for k in available_data}
 
 for k, g in data.items():

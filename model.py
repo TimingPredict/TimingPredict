@@ -11,19 +11,19 @@ class MLP(torch.nn.Module):
             fcs.append(torch.nn.Linear(sizes[i - 1], sizes[i]))
             if i < len(sizes) - 1:
                 fcs.append(torch.nn.LeakyReLU(negative_slope=0.2))
-                fcs.append(torch.nn.Dropout(p=0.5))
+                # fcs.append(torch.nn.Dropout(p=0.5))
         self.layers = torch.nn.Sequential(*fcs)
 
     def forward(self, x):
         return self.layers(x)
 
 class AllConv(torch.nn.Module):
-    def __init__(self, in_nf, in_ef, h1, h2, out_nf, mlp_h1=64, mlp_h2=64):
+    def __init__(self, in_nf, in_ef, h1, h2, out_nf, mlp_h1=64, mlp_h2=128, mlp_h3=64):
         super().__init__()
         self.h1 = h1
         self.h2 = h2
-        self.MLP_msg = MLP(in_nf * 2 + in_ef, mlp_h1, mlp_h2, 1 + h1 + h2)
-        self.MLP_reduce = MLP(in_nf + h1 + h2, mlp_h1, mlp_h2, out_nf)
+        self.MLP_msg = MLP(in_nf * 2 + in_ef, mlp_h1, mlp_h2, mlp_h3, 1 + h1 + h2)
+        self.MLP_reduce = MLP(in_nf + h1 + h2, mlp_h1, mlp_h2, mlp_h3, out_nf)
 
     def edge_udf(self, edges):
         x = self.MLP_msg(torch.cat([edges.src['nf'], edges.dst['nf'], edges.data['ef']], dim=1))
@@ -45,9 +45,9 @@ class AllConv(torch.nn.Module):
 class TimingGCN(torch.nn.Module):
     def __init__(self, num_node_features, num_edge_features, num_node_outputs):
         super().__init__()
-        self.conv1 = AllConv(num_node_features, num_edge_features, 32, 32, 32)
-        self.conv2 = AllConv(32, num_edge_features, 32, 32, 32)
-        self.conv3 = AllConv(32, num_edge_features, 16, 16, num_node_outputs)
+        self.conv1 = AllConv(num_node_features, num_edge_features, 64, 64, 64)
+        self.conv2 = AllConv(64, num_edge_features, 64, 64, 64)
+        self.conv3 = AllConv(64, num_edge_features, 32, 32, num_node_outputs)
 
     def forward(self, g):
         x = self.conv1(g, g.ndata['node_features'], g.edata['edge_features'])

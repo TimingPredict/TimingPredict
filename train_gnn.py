@@ -27,7 +27,7 @@ def test(model):
                               truth.cpu().numpy().reshape(-1)))
 
 def train(model):
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     model.train()
 
     for e in range(10000):
@@ -46,11 +46,11 @@ def train(model):
                                 for k, g in data_test.items())
                 print('Epoch {}, train loss {:.6f}, test loss {:.6f}'.format(e, train_loss_tot / len(data_train), test_loss / len(data_test)))
 
-        if e == 0 or e % 100 == 99:
-            torch.save(model.state_dict(), './checkpoints/02_xxx/{}.pth'.format(e))
-            print('saved model')
+        # if e == 0 or e % 100 == 99:
+        #     torch.save(model.state_dict(), './checkpoints/05_xxx/{}.pth'.format(e))
+        #     print('saved model')
 
 if __name__ == '__main__':
-    # model.load_state_dict(torch.load('./checkpoints/01_netdelaylog/1599.pth'))
-    # test(model)
-    train(model)
+    model.load_state_dict(torch.load('./checkpoints/03_largermlp/1799.pth'))
+    test(model)
+    # train(model)

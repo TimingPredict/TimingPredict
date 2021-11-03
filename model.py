@@ -17,40 +17,77 @@ class MLP(torch.nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-class AllConv(torch.nn.Module):
-    def __init__(self, in_nf, in_ef, h1, h2, out_nf, mlp_h1=64, mlp_h2=128, mlp_h3=64):
+class NetConv(torch.nn.Module):
+    def __init__(self, in_nf, in_ef, out_nf, h1=32, h2=32):
         super().__init__()
+        self.in_nf = in_nf
+        self.in_ef = in_ef
+        self.out_nf = out_nf
         self.h1 = h1
         self.h2 = h2
-        self.MLP_msg = MLP(in_nf * 2 + in_ef, mlp_h1, mlp_h2, mlp_h3, 1 + h1 + h2)
-        self.MLP_reduce = MLP(in_nf + h1 + h2, mlp_h1, mlp_h2, mlp_h3, out_nf)
+        
+        self.MLP_msg_i2o = MLP(
+            self.in_nf * 2 + self.in_ef,
+            64,
+            64,
+            64,
+            1 + self.h1 + self.h2)
+        
+        self.MLP_reduce_o = MLP(
+            self.in_nf + self.h1 + self.h2,
+            64,
+            64,
+            64,
+            self.out_nf)
+        
+        self.MLP_msg_o2i = MLP(
+            self.in_nf * 2 + self.in_ef,
+            64,
+            64,
+            64,
+            64,
+            self.out_nf)
 
-    def edge_udf(self, edges):
-        x = self.MLP_msg(torch.cat([edges.src['nf'], edges.dst['nf'], edges.data['ef']], dim=1))
+    def edge_msg_i(self, edges):
+        x = torch.cat([edges.src['nf'], edges.dst['nf'], edges.data['ef']], dim=1)
+        x = self.MLP_msg_o2i(x)
+        return {'efi': x}
+
+    def edge_msg_o(self, edges):
+        x = torch.cat([edges.src['nf'], edges.dst['nf'], edges.data['ef']], dim=1)
+        x = self.MLP_msg_i2o(x)
         k, f1, f2 = torch.split(x, [1, self.h1, self.h2], dim=1)
         k = torch.sigmoid(k)
-        return {'ef1': f1 * k, 'ef2': f2 * k}
+        return {'efo1': f1 * k, 'efo2': f2 * k}
 
-    def forward(self, g, nf, ef):
+    def node_reduce_o(self, nodes):
+        x = torch.cat([nodes.data['nf'], nodes.data['nfo1'], nodes.data['nfo2']], dim=1)
+        x = self.MLP_reduce_o(x)
+        return {'new_nf': x}
+        
+    def forward(self, g, ts, nf):
         with g.local_scope():
             g.ndata['nf'] = nf
-            g.edata['ef'] = ef
-            g.apply_edges(self.edge_udf)
-            g.update_all(fn.copy_e('ef1', 'ef1'), fn.sum('ef1', 'nf1'))
-            g.update_all(fn.copy_e('ef2', 'ef2'), fn.max('ef2', 'nf2'))
-            x = torch.cat([g.ndata['nf'], g.ndata['nf1'], g.ndata['nf2']], dim=1)
-            x = self.MLP_reduce(x)
-            return x
+            # input nodes
+            g.update_all(self.edge_msg_i, fn.sum('efi', 'new_nf'), etype='net_out')
+            # output nodes
+            g.apply_edges(self.edge_msg_o, etype='net_in')
+            g.update_all(fn.copy_e('efo1', 'efo1'), fn.sum('efo1', 'nfo1'), etype='net_in')
+            g.update_all(fn.copy_e('efo2', 'efo2'), fn.max('efo2', 'nfo2'), etype='net_in')
+            g.apply_nodes(self.node_reduce_o, ts['output_nodes'])
+            
+            return g.ndata['new_nf']
 
 class TimingGCN(torch.nn.Module):
-    def __init__(self, num_node_features, num_edge_features, num_node_outputs):
+    def __init__(self):
         super().__init__()
-        self.conv1 = AllConv(num_node_features, num_edge_features, 64, 64, 64)
-        self.conv2 = AllConv(64, num_edge_features, 64, 64, 64)
-        self.conv3 = AllConv(64, num_edge_features, 32, 32, num_node_outputs)
+        self.nc1 = NetConv(10, 2, 32)
+        self.nc2 = NetConv(32, 2, 32)
+        self.nc3 = NetConv(32, 2, 4)
 
-    def forward(self, g):
-        x = self.conv1(g, g.ndata['node_features'], g.edata['edge_features'])
-        x = self.conv2(g, x, g.edata['edge_features'])
-        x = self.conv3(g, x, g.edata['edge_features'])
+    def forward(self, g, ts):
+        nf0 = g.ndata['nf']
+        x = self.nc1(g, ts, nf0)
+        x = self.nc2(g, ts, x)
+        x = self.nc3(g, ts, x)
         return x

@@ -1,7 +1,6 @@
 import torch
 import dgl
 import random
-import pdb
 
 random.seed(8026728)
 
@@ -9,12 +8,25 @@ available_data = 'blabla usb_cdc_core BM64 jpeg_encoder salsa20 usbf_device aes1
 
 train_data_keys = random.sample(available_data, 14)
 
+def gen_topo(g_hetero):
+    na, nb = g_hetero.edges(etype='net_out', form='uv')
+    ca, cb = g_hetero.edges(etype='cell_out', form='uv')
+    g = dgl.graph((torch.cat([na, ca]).cpu(), torch.cat([nb, cb]).cpu()))
+    topo = dgl.topological_nodes_generator(g)
+    return [t.cuda() for t in topo]
+
 data = {}
 for k in available_data:
     g = dgl.load_graphs('data/5_cellat/{}.graph.bin'.format(k))[0][0].to('cuda')
     g.ndata['n_net_delays_log'] = torch.log(0.0001 + g.ndata['n_net_delays']) + 7.6
+    g.ndata['n_ats'][torch.abs(g.ndata['n_ats']) > 1e20] = 0   # ignore all uninitialized stray pins
+    g.edges['cell_out'].data['ef'] = g.edges['cell_out'].data['ef'].type(torch.float32)
+    g.edges['cell_out'].data['e_cell_delays'] = g.edges['cell_out'].data['e_cell_delays'].type(torch.float32)
     ts = {'input_nodes': (g.ndata['nf'][:, 1] < 0.5).nonzero().flatten().type(torch.int32),
-          'output_nodes': (g.ndata['nf'][:, 1] > 0.5).nonzero().flatten().type(torch.int32)}
+          'output_nodes': (g.ndata['nf'][:, 1] > 0.5).nonzero().flatten().type(torch.int32),
+          'pi_nodes': torch.logical_and(g.ndata['nf'][:, 1] > 0.5, g.ndata['nf'][:, 0] > 0.5).nonzero().flatten().type(torch.int32),
+          'po_nodes': torch.logical_and(g.ndata['nf'][:, 1] < 0.5, g.ndata['nf'][:, 0] > 0.5).nonzero().flatten().type(torch.int32),
+          'topo': gen_topo(g)}
     data[k] = g, ts
 
 data_train = {k: t for k, t in data.items() if k in train_data_keys}

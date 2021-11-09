@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import dgl
 import dgl.function as fn
+import functools
 import pdb
 
 class MLP(torch.nn.Module):
@@ -63,30 +64,40 @@ class NetConv(torch.nn.Module):
             return g.ndata['new_nf']
 
 class SignalProp(torch.nn.Module):
-    def __init__(self, in_nf, in_cell_num_luts, in_cell_lut_sz, out_nf, h1=32, h2=32, lut_dup=16):
+    def __init__(self, in_nf, in_cell_num_luts, in_cell_lut_sz, h1=32, h2=32, lut_dup=4):
         super().__init__()
         self.in_nf = in_nf
         self.in_cell_num_luts = in_cell_num_luts
         self.in_cell_lut_sz = in_cell_lut_sz
-        self.out_nf = out_nf
+        self.out_nf = 4 + 4
         self.h1 = h1
         self.h2 = h2
         self.lut_dup = lut_dup
         
-        self.MLP_netprop = MLP(self.out_nf + 2 * self.in_nf, 128, 128, 128, 128, self.out_nf)
-        self.MLP_lut_query = MLP(self.out_nf + 2 * self.in_nf, 128, 128, 128, self.in_cell_num_luts * lut_dup * 2)
-        self.MLP_lut_attention = MLP(1 + 2 + self.in_cell_lut_sz * 2, 128, 128, 128, self.in_cell_lut_sz * 2)
-        self.MLP_cellarc_msg = MLP(self.out_nf + 2 * self.in_nf + self.in_cell_num_luts * self.lut_dup, 128, 128, 128, 1 + self.h1 + self.h2)
-        self.MLP_cellreduce = MLP(self.in_nf + self.h1 + self.h2, 128, 128, 128, self.out_nf)
+        self.MLP_netprop = MLP(self.out_nf + 2 * self.in_nf, 64, 64, 64, 64, self.out_nf)
+        self.MLP_lut_query = MLP(self.out_nf + 2 * self.in_nf, 64, 64, 64, self.in_cell_num_luts * lut_dup * 2)
+        self.MLP_lut_attention = MLP(1 + 2 + self.in_cell_lut_sz * 2, 64, 64, 64, self.in_cell_lut_sz * 2)
+        self.MLP_cellarc_msg = MLP(self.out_nf + 2 * self.in_nf + self.in_cell_num_luts * self.lut_dup, 64, 64, 64, 1 + self.h1 + self.h2)
+        self.MLP_cellreduce = MLP(self.in_nf + self.h1 + self.h2, 64, 64, 64, self.out_nf)
 
-    def edge_msg_net(self, edges):
-        x = torch.cat([edges.src['new_nf'], edges.src['nf'], edges.dst['nf']], dim=1)
+    def edge_msg_net(self, edges, groundtruth=False):
+        if groundtruth:
+            last_nf = edges.src['n_atslew']
+        else:
+            last_nf = edges.src['new_nf']
+        
+        x = torch.cat([last_nf, edges.src['nf'], edges.dst['nf']], dim=1)
         x = self.MLP_netprop(x)
         return {'efn': x}
 
-    def edge_msg_cell(self, edges):
+    def edge_msg_cell(self, edges, groundtruth=False):
         # generate lut axis query
-        q = torch.cat([edges.src['new_nf'], edges.src['nf'], edges.dst['nf']], dim=1)
+        if groundtruth:
+            last_nf = edges.src['n_atslew']
+        else:
+            last_nf = edges.src['new_nf']
+            
+        q = torch.cat([last_nf, edges.src['nf'], edges.dst['nf']], dim=1)
         q = self.MLP_lut_query(q)
         q = q.reshape(-1, 2)
         
@@ -111,7 +122,7 @@ class SignalProp(torch.nn.Module):
 
         # construct final msg
         r = r.reshape(len(edges), self.in_cell_num_luts * self.lut_dup)
-        x = torch.cat([edges.src['new_nf'], edges.src['nf'], edges.dst['nf'], r], dim=1)
+        x = torch.cat([last_nf, edges.src['nf'], edges.dst['nf'], r], dim=1)
         x = self.MLP_cellarc_msg(x)
         k, f1, f2 = torch.split(x, [1, self.h1, self.h2], dim=1)
         k = torch.sigmoid(k)
@@ -123,44 +134,50 @@ class SignalProp(torch.nn.Module):
         return {'new_nf': x}
 
     def node_skip_level_o(self, nodes):
-        # fill in directly the answer..
-        pseudonf = torch.zeros(len(nodes), self.out_nf, device='cuda', dtype=nodes.data['nf'].dtype)
-        pseudonf[:, :4] = nodes.data['n_ats']
-        return {'new_nf': pseudonf}
+        return {'new_nf': nodes.data['n_atslew']}
         
-    def forward(self, g, ts, nf, level_limit=None):
+    def forward(self, g, ts, nf, groundtruth=False, level_limit=None):
         assert len(ts['topo']) % 2 == 0, 'The number of logic levels must be even (net, cell, net)'
-        at_nodes = []
+        
         with g.local_scope():
             # init level 0 with ground truth features
             g.ndata['nf'] = nf
             g.ndata['new_nf'] = torch.zeros(g.num_nodes(), self.out_nf, device='cuda', dtype=nf.dtype)
             g.apply_nodes(self.node_skip_level_o, ts['pi_nodes'])
-            at_nodes.append(ts['pi_nodes'])
 
-            def prop_net(i):
-                g.pull(ts['topo'][i], self.edge_msg_net, fn.sum('efn', 'new_nf'), etype='net_out')
+            def prop_net(nodes, groundtruth):
+                g.pull(nodes, functools.partial(self.edge_msg_net, groundtruth=groundtruth), fn.sum('efn', 'new_nf'), etype='net_out')
 
-            def prop_cell(i):
-                es = g.in_edges(ts['topo'][i], etype='cell_out')
-                g.apply_edges(self.edge_msg_cell, es, etype='cell_out')
+            def prop_cell(nodes, groundtruth):
+                es = g.in_edges(nodes, etype='cell_out')
+                g.apply_edges(functools.partial(self.edge_msg_cell, groundtruth=groundtruth), es, etype='cell_out')
                 g.send_and_recv(es, fn.copy_e('efc1', 'efc1'), fn.sum('efc1', 'nfc1'), etype='cell_out')
                 g.send_and_recv(es, fn.copy_e('efc2', 'efc2'), fn.max('efc2', 'nfc2'), etype='cell_out')
-                g.apply_nodes(self.node_reduce_o, ts['topo'][i])
+                g.apply_nodes(self.node_reduce_o, nodes)
             
-            # propagate
-            for i in range(1, len(ts['topo'])):
-                if level_limit is not None and i >= level_limit:
-                    # g.apply_nodes(self.node_skip_level_o, ts['topo'][i])
-                    break
-                at_nodes.append(ts['topo'][i])
-                if i % 2 == 1:
-                    prop_net(i)
-                else:
-                    prop_cell(i)
+            if groundtruth:
+                # don't need to propagate.
+                prop_net(ts['input_nodes'], groundtruth)
+                prop_cell(ts['output_nodes_nonpi'], groundtruth)
+                valid_nodes = slice(None)  # [:], all
 
-            at_nodes, _ = torch.sort(torch.cat(at_nodes))
-            return g.ndata['new_nf'], at_nodes.type(torch.long)
+            else:
+                # propagate
+                valid_nodes = [ts['pi_nodes']]
+                for i in range(1, len(ts['topo'])):
+                    if level_limit is not None and i >= level_limit:
+                        # g.apply_nodes(self.node_skip_level_o, ts['topo'][i])
+                        break
+                    valid_nodes.append(ts['topo'][i])
+                    if i % 2 == 1:
+                        prop_net(ts['topo'][i], groundtruth)
+                    else:
+                        prop_cell(ts['topo'][i], groundtruth)
+                        
+                valid_nodes, _ = torch.sort(torch.cat(valid_nodes))
+                valid_nodes = valid_nodes.type(torch.long)
+                
+            return g.ndata['new_nf'], valid_nodes
 
 class TimingGCN(torch.nn.Module):
     def __init__(self):
@@ -168,15 +185,14 @@ class TimingGCN(torch.nn.Module):
         self.nc1 = NetConv(10, 2, 32)
         self.nc2 = NetConv(32, 2, 32)
         self.nc3 = NetConv(32, 2, 16)  # 16 = 4x delay + 12x arbitrary (might include cap, beta)
-        self.prop = SignalProp(10 + 16, 8, 7, 16)  # 16 = 4x arrival time + 12x arbitrary (might include slew)
+        self.prop = SignalProp(10 + 16, 8, 7)
 
-    def forward(self, g, ts, level_limit=None):
+    def forward(self, g, ts, groundtruth=False, level_limit=None):
         nf0 = g.ndata['nf']
         x = self.nc1(g, ts, nf0)
         x = self.nc2(g, ts, x)
         x = self.nc3(g, ts, x)
         net_delays = x[:, :4]
         nf1 = torch.cat([nf0, x], dim=1)
-        nf2, at_nodes = self.prop(g, ts, nf1, level_limit=level_limit)
-        ats = nf2[:, :4]
-        return net_delays, ats[at_nodes], at_nodes
+        nf2, at_nodes = self.prop(g, ts, nf1, groundtruth=groundtruth, level_limit=level_limit)
+        return net_delays, nf2, at_nodes

@@ -22,7 +22,10 @@ for k in available_data:
     invalid_nodes = torch.abs(g.ndata['n_ats']) > 1e20   # ignore all uninitialized stray pins
     g.ndata['n_ats'][invalid_nodes] = 0
     g.ndata['n_slews'][invalid_nodes] = 0
-    g.ndata['n_atslew'] = torch.cat([g.ndata['n_ats'], g.ndata['n_slews']], dim=1)
+    g.ndata['n_atslew'] = torch.cat([
+        g.ndata['n_ats'],
+        torch.log(0.0001 + g.ndata['n_slews']) + 3
+    ], dim=1)
     g.edges['cell_out'].data['ef'] = g.edges['cell_out'].data['ef'].type(torch.float32)
     g.edges['cell_out'].data['e_cell_delays'] = g.edges['cell_out'].data['e_cell_delays'].type(torch.float32)
     ts = {'input_nodes': (g.ndata['nf'][:, 1] < 0.5).nonzero().flatten().type(torch.int32),

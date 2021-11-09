@@ -64,12 +64,13 @@ class NetConv(torch.nn.Module):
             return g.ndata['new_nf']
 
 class SignalProp(torch.nn.Module):
-    def __init__(self, in_nf, in_cell_num_luts, in_cell_lut_sz, h1=32, h2=32, lut_dup=4):
+    def __init__(self, in_nf, in_cell_num_luts, in_cell_lut_sz, out_nf, out_cef, h1=32, h2=32, lut_dup=4):
         super().__init__()
         self.in_nf = in_nf
         self.in_cell_num_luts = in_cell_num_luts
         self.in_cell_lut_sz = in_cell_lut_sz
-        self.out_nf = 4 + 4
+        self.out_nf = out_nf
+        self.out_cef = out_cef
         self.h1 = h1
         self.h2 = h2
         self.lut_dup = lut_dup
@@ -77,7 +78,7 @@ class SignalProp(torch.nn.Module):
         self.MLP_netprop = MLP(self.out_nf + 2 * self.in_nf, 64, 64, 64, 64, self.out_nf)
         self.MLP_lut_query = MLP(self.out_nf + 2 * self.in_nf, 64, 64, 64, self.in_cell_num_luts * lut_dup * 2)
         self.MLP_lut_attention = MLP(1 + 2 + self.in_cell_lut_sz * 2, 64, 64, 64, self.in_cell_lut_sz * 2)
-        self.MLP_cellarc_msg = MLP(self.out_nf + 2 * self.in_nf + self.in_cell_num_luts * self.lut_dup, 64, 64, 64, 1 + self.h1 + self.h2)
+        self.MLP_cellarc_msg = MLP(self.out_nf + 2 * self.in_nf + self.in_cell_num_luts * self.lut_dup, 64, 64, 64, 1 + self.h1 + self.h2 + self.out_cef)
         self.MLP_cellreduce = MLP(self.in_nf + self.h1 + self.h2, 64, 64, 64, self.out_nf)
 
     def edge_msg_net(self, edges, groundtruth=False):
@@ -116,17 +117,15 @@ class SignalProp(torch.nn.Module):
         # look up answer matrix in lut
         tables_len = self.in_cell_num_luts * self.in_cell_lut_sz ** 2
         tables = edges.data['ef'][:, axis_len:axis_len + tables_len]
-        tables = tables.reshape(-1, self.in_cell_lut_sz ** 2)
-        tables = tables.repeat(1, self.lut_dup)
-        r = torch.matmul(tables.reshape(-1, 1, self.in_cell_lut_sz ** 2), a.reshape(-1, self.in_cell_lut_sz ** 2, 1))   # batch dot product
+        r = torch.matmul(tables.reshape(-1, 1, 1, self.in_cell_lut_sz ** 2), a.reshape(-1, 4, self.in_cell_lut_sz ** 2, 1))   # batch dot product
 
         # construct final msg
         r = r.reshape(len(edges), self.in_cell_num_luts * self.lut_dup)
         x = torch.cat([last_nf, edges.src['nf'], edges.dst['nf'], r], dim=1)
         x = self.MLP_cellarc_msg(x)
-        k, f1, f2 = torch.split(x, [1, self.h1, self.h2], dim=1)
+        k, f1, f2, cef = torch.split(x, [1, self.h1, self.h2, self.out_cef], dim=1)
         k = torch.sigmoid(k)
-        return {'efc1': f1 * k, 'efc2': f2 * k}
+        return {'efc1': f1 * k, 'efc2': f2 * k, 'efce': cef}
 
     def node_reduce_o(self, nodes):
         x = torch.cat([nodes.data['nf'], nodes.data['nfc1'], nodes.data['nfc2']], dim=1)
@@ -136,7 +135,7 @@ class SignalProp(torch.nn.Module):
     def node_skip_level_o(self, nodes):
         return {'new_nf': nodes.data['n_atslew']}
         
-    def forward(self, g, ts, nf, groundtruth=False, level_limit=None):
+    def forward(self, g, ts, nf, groundtruth=False):
         assert len(ts['topo']) % 2 == 0, 'The number of logic levels must be even (net, cell, net)'
         
         with g.local_scope():
@@ -159,25 +158,16 @@ class SignalProp(torch.nn.Module):
                 # don't need to propagate.
                 prop_net(ts['input_nodes'], groundtruth)
                 prop_cell(ts['output_nodes_nonpi'], groundtruth)
-                valid_nodes = slice(None)  # [:], all
 
             else:
                 # propagate
-                valid_nodes = [ts['pi_nodes']]
                 for i in range(1, len(ts['topo'])):
-                    if level_limit is not None and i >= level_limit:
-                        # g.apply_nodes(self.node_skip_level_o, ts['topo'][i])
-                        break
-                    valid_nodes.append(ts['topo'][i])
                     if i % 2 == 1:
                         prop_net(ts['topo'][i], groundtruth)
                     else:
                         prop_cell(ts['topo'][i], groundtruth)
-                        
-                valid_nodes, _ = torch.sort(torch.cat(valid_nodes))
-                valid_nodes = valid_nodes.type(torch.long)
                 
-            return g.ndata['new_nf'], valid_nodes
+            return g.ndata['new_nf'], g.edges['cell_out'].data['efce']
 
 class TimingGCN(torch.nn.Module):
     def __init__(self):
@@ -185,14 +175,14 @@ class TimingGCN(torch.nn.Module):
         self.nc1 = NetConv(10, 2, 32)
         self.nc2 = NetConv(32, 2, 32)
         self.nc3 = NetConv(32, 2, 16)  # 16 = 4x delay + 12x arbitrary (might include cap, beta)
-        self.prop = SignalProp(10 + 16, 8, 7)
+        self.prop = SignalProp(10 + 16, 8, 7, 8, 4)
 
-    def forward(self, g, ts, groundtruth=False, level_limit=None):
+    def forward(self, g, ts, groundtruth=False):
         nf0 = g.ndata['nf']
         x = self.nc1(g, ts, nf0)
         x = self.nc2(g, ts, x)
         x = self.nc3(g, ts, x)
         net_delays = x[:, :4]
         nf1 = torch.cat([nf0, x], dim=1)
-        nf2, at_nodes = self.prop(g, ts, nf1, groundtruth=groundtruth, level_limit=level_limit)
-        return net_delays, nf2, at_nodes
+        nf2, cell_delays = self.prop(g, ts, nf1, groundtruth=groundtruth)
+        return net_delays, cell_delays, nf2

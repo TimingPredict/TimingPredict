@@ -29,10 +29,11 @@ def test(model):    # at
                               truth.cpu().numpy().reshape(-1)))
 
 def train(model):
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    model.load_state_dict(torch.load('./checkpoints/08_atcd_specul/11799.pth'))
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0003)
     batch_size = 7
 
-    for e in range(100000):
+    for e in range(11800, 100000):
         model.train()
         train_loss_tot_net_delays, train_loss_tot_cell_delays, train_loss_tot_ats = 0, 0, 0
         train_loss_tot_cell_delays_prop, train_loss_tot_ats_prop = 0, 0
@@ -92,8 +93,8 @@ def train(model):
                     test_loss_tot_ats / len(data_test),
                     test_loss_tot_ats_prop / len(data_test)))
 
-            if e == 0 or e % 100 == 99:
-                torch.save(model.state_dict(), './checkpoints/07_atcelldelay/{}.pth'.format(e))
+            if e == 0 or e % 200 == 199 or (e > 2000 and test_loss_tot_ats_prop / len(data_test) < 1.5):
+                torch.save(model.state_dict(), './checkpoints/08_atcd_specul/{}.pth'.format(e))
                 print('saved model')
                 try:
                     test(model)

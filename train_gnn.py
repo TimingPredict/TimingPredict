@@ -3,6 +3,7 @@ import dgl
 import torch.nn.functional as F
 import random
 import pdb
+import time
 
 from data_graph import data_train, data_test
 from model import TimingGCN
@@ -17,16 +18,24 @@ def test(model):    # at
     with torch.no_grad():
         print('======= Training dataset ======')
         for k, (g, ts) in data_train.items():
+            torch.cuda.synchronize()
+            time_s = time.time()
             pred = model(g, ts, groundtruth=False)[2][:, :4]
+            torch.cuda.synchronize()
+            time_t = time.time()
             truth = g.ndata['n_atslew'][:, :4]
             print(k, r2_score(pred.cpu().numpy().reshape(-1),
-                              truth.cpu().numpy().reshape(-1)))
+                              truth.cpu().numpy().reshape(-1)), '\ttime', time_t - time_s)
         print('======= Test dataset ======')
         for k, (g, ts) in data_test.items():
+            torch.cuda.synchronize()
+            time_s = time.time()
             pred = model(g, ts, groundtruth=False)[2][:, :4]
+            torch.cuda.synchronize()
+            time_t = time.time()
             truth = g.ndata['n_atslew'][:, :4]
             print(k, r2_score(pred.cpu().numpy().reshape(-1),
-                              truth.cpu().numpy().reshape(-1)))
+                              truth.cpu().numpy().reshape(-1)), '\ttime', time_t - time_s)
 
 def train(model):
     model.load_state_dict(torch.load('./checkpoints/08_atcd_specul/11799.pth'))
@@ -94,8 +103,8 @@ def train(model):
                     test_loss_tot_ats_prop / len(data_test)))
 
             if e == 0 or e % 200 == 199 or (e > 2000 and test_loss_tot_ats_prop / len(data_test) < 1.5):
-                torch.save(model.state_dict(), './checkpoints/08_atcd_specul/{}.pth'.format(e))
-                print('saved model')
+                # torch.save(model.state_dict(), './checkpoints/08_atcd_specul/{}.pth'.format(e))
+                # print('saved model')
                 try:
                     test(model)
                 except ValueError as e:
@@ -103,6 +112,6 @@ def train(model):
                     print('Error testing, but ignored')
 
 if __name__ == '__main__':
-    # model.load_state_dict(torch.load('./checkpoints/03_largermlp/1799.pth'))
-    # test(model)
-    train(model)
+    model.load_state_dict(torch.load('./checkpoints/08_atcd_specul/11279.pth'))
+    test(model)
+    # train(model)

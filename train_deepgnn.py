@@ -69,11 +69,11 @@ def train(model, args):
                 save_path = './checkpoints/{}/{}.pth'.format(args.save_to, e)
                 torch.save(model.state_dict(), save_path)
                 print('saved model to', save_path)
-            # try:
-            #     test(model)
-            # except ValueError as e:
-            #     print(e)
-            #     print('Error testing, but ignored')
+            try:
+                test(model)
+            except ValueError as e:
+                print(e)
+                print('Error testing, but ignored')
 
     def train_iter(e):
         model.train()

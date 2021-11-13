@@ -16,13 +16,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     '--save_to', type=str,
     help='If specified, the log and model would be saved to that checkpoint directory')
-parser.set_defaults(netdelay=True, celldelay=True)
+parser.set_defaults(netdelay=True, celldelay=True, groundtruth=True)
 parser.add_argument(
     '--no_netdelay', dest='netdelay', action='store_false',
     help='Disable the net delay training supervision (default enabled)')
 parser.add_argument(
     '--no_celldelay', dest='celldelay', action='store_false',
     help='Disable the cell delay training supervision (default enabled)')
+parser.add_argument(
+    '--no_groundtruth', dest='groundtruth', action='store_false',
+    help='Disable ground-truth breakdown in training (default enabled)')
 
 model = TimingGCN()
 model.cuda()
@@ -62,7 +65,7 @@ def train(model, args):
         optimizer.zero_grad()
         
         for k, (g, ts) in random.sample(data_train.items(), batch_size):
-            pred_net_delays, pred_cell_delays, pred_atslew = model(g, ts, groundtruth=True)
+            pred_net_delays, pred_cell_delays, pred_atslew = model(g, ts, groundtruth=args.groundtruth)
             loss_net_delays, loss_cell_delays = 0, 0
 
             if args.netdelay:

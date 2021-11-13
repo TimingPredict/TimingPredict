@@ -15,6 +15,22 @@ def gen_topo(g_hetero):
     topo = dgl.topological_nodes_generator(g)
     return [t.cuda() for t in topo]
 
+def gen_homobigraph_with_features(g_hetero):
+    # for DeepGCNII baseline
+    na, nb = g_hetero.edges(etype='net_out', form='uv')
+    ca, cb = g_hetero.edges(etype='cell_out', form='uv')
+    ne = torch.cat([torch.tensor([[0., 1., 0., 0., 0., 0., 0., 0., 0., 0.]]).expand(len(na), 10).cuda(),
+                    g_hetero.edges['net_out'].data['ef']], dim=1)
+    ce = g_hetero.edges['cell_out'].data['ef'][:, 120:512].reshape(len(ca), 2*4, 49)
+    ce = torch.cat([torch.tensor([[1., 0.]]).expand(len(ca), 2).cuda(),
+                    torch.mean(ce, dim=2),
+                    torch.zeros(len(ca), 2).cuda()], dim=1)
+    g = dgl.graph((torch.cat([na, ca, nb, cb]), torch.cat([nb, cb, na, ca])))
+    g.ndata['nf'] = g_hetero.ndata['nf']
+    g.ndata['n_atslew'] = g_hetero.ndata['n_atslew']
+    g.edata['ef'] = torch.cat([ne, ce, -ne, -ce])
+    return g
+
 data = {}
 for k in available_data:
     g = dgl.load_graphs('data/6_cellatslew/{}.graph.bin'.format(k))[0][0].to('cuda')

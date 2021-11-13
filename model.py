@@ -186,3 +186,45 @@ class TimingGCN(torch.nn.Module):
         nf1 = torch.cat([nf0, x], dim=1)
         nf2, cell_delays = self.prop(g, ts, nf1, groundtruth=groundtruth)
         return net_delays, cell_delays, nf2
+
+# {AllConv, DeepGCNII}: Simple and Deep Graph Convolutional Networks, arxiv 2007.02133 (GCNII)
+class AllConv(torch.nn.Module):
+    def __init__(self, in_nf, out_nf, in_ef=12, h1=10, h2=10):
+        super().__init__()
+        self.h1 = h1
+        self.h2 = h2
+        self.MLP_msg = MLP(in_nf * 2 + in_ef, 32, 32, 32, 1 + h1 + h2)
+        self.MLP_reduce = MLP(in_nf + h1 + h2, 32, 32, 32, out_nf)
+
+    def edge_udf(self, edges):
+        x = self.MLP_msg(torch.cat([edges.src['nf'], edges.dst['nf'], edges.data['ef']], dim=1))
+        k, f1, f2 = torch.split(x, [1, self.h1, self.h2], dim=1)
+        k = torch.sigmoid(k)
+        return {'ef1': f1 * k, 'ef2': f2 * k}
+
+    def forward(self, g, nf):   # assume edata is in ef
+        with g.local_scope():
+            g.ndata['nf'] = nf
+            g.apply_edges(self.edge_udf)
+            g.update_all(fn.copy_e('ef1', 'ef1'), fn.sum('ef1', 'nf1'))
+            g.update_all(fn.copy_e('ef2', 'ef2'), fn.max('ef2', 'nf2'))
+            x = torch.cat([g.ndata['nf'], g.ndata['nf1'], g.ndata['nf2']], dim=1)
+            x = self.MLP_reduce(x)
+            return x
+
+class DeepGCNII(torch.nn.Module):
+    def __init__(self, n_layers=60, out_nf=8):
+        super().__init__()
+        self.n_layers = n_layers
+        self.out_nf = out_nf
+        self.layer0 = AllConv(10, 16)
+        self.layers = [AllConv(26, 16) for i in range(n_layers - 2)]
+        self.layern = AllConv(16, out_nf)
+        self.layers_store = torch.nn.Sequential(*self.layers)
+
+    def forward(self, g):
+        x = self.layer0(g, g.ndata['nf'])
+        for layer in self.layers:
+            x = layer(g, torch.cat([x, g.ndata['nf']], dim=1)) + x   # both two tricks are mimicked here.
+        x = self.layern(g, x)
+        return x

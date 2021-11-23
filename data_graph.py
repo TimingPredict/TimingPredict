@@ -1,6 +1,7 @@
 import torch
 import dgl
 import random
+import time
 
 random.seed(8026728)
 
@@ -9,11 +10,16 @@ available_data = 'blabla usb_cdc_core BM64 jpeg_encoder salsa20 usbf_device aes1
 train_data_keys = random.sample(available_data, 14)
 
 def gen_topo(g_hetero):
+    torch.cuda.synchronize()
+    time_s = time.time()
     na, nb = g_hetero.edges(etype='net_out', form='uv')
     ca, cb = g_hetero.edges(etype='cell_out', form='uv')
     g = dgl.graph((torch.cat([na, ca]).cpu(), torch.cat([nb, cb]).cpu()))
     topo = dgl.topological_nodes_generator(g)
-    return [t.cuda() for t in topo]
+    ret = [t.cuda() for t in topo]
+    torch.cuda.synchronize()
+    time_e = time.time()
+    return ret, time_e - time_s
 
 def gen_homobigraph_with_features(g_hetero):
     # for DeepGCNII baseline
@@ -33,7 +39,7 @@ def gen_homobigraph_with_features(g_hetero):
 
 data = {}
 for k in available_data:
-    g = dgl.load_graphs('data/6_cellatslew/{}.graph.bin'.format(k))[0][0].to('cuda')
+    g = dgl.load_graphs('data/8_rat/{}.graph.bin'.format(k))[0][0].to('cuda')
     g.ndata['n_net_delays_log'] = torch.log(0.0001 + g.ndata['n_net_delays']) + 7.6
     invalid_nodes = torch.abs(g.ndata['n_ats']) > 1e20   # ignore all uninitialized stray pins
     g.ndata['n_ats'][invalid_nodes] = 0
@@ -44,19 +50,25 @@ for k in available_data:
     ], dim=1)
     g.edges['cell_out'].data['ef'] = g.edges['cell_out'].data['ef'].type(torch.float32)
     g.edges['cell_out'].data['e_cell_delays'] = g.edges['cell_out'].data['e_cell_delays'].type(torch.float32)
+    topo, topo_time = gen_topo(g)
     ts = {'input_nodes': (g.ndata['nf'][:, 1] < 0.5).nonzero().flatten().type(torch.int32),
           'output_nodes': (g.ndata['nf'][:, 1] > 0.5).nonzero().flatten().type(torch.int32),
           'output_nodes_nonpi': torch.logical_and(g.ndata['nf'][:, 1] > 0.5, g.ndata['nf'][:, 0] < 0.5).nonzero().flatten().type(torch.int32),
           'pi_nodes': torch.logical_and(g.ndata['nf'][:, 1] > 0.5, g.ndata['nf'][:, 0] > 0.5).nonzero().flatten().type(torch.int32),
           'po_nodes': torch.logical_and(g.ndata['nf'][:, 1] < 0.5, g.ndata['nf'][:, 0] > 0.5).nonzero().flatten().type(torch.int32),
-          'topo': gen_topo(g)}
+          'endpoints': (g.ndata['n_is_timing_endpt'] > 0.5).nonzero().flatten().type(torch.long),
+          'topo': topo,
+          'topo_time': topo_time}
     data[k] = g, ts
 
 data_train = {k: t for k, t in data.items() if k in train_data_keys}
 data_test = {k: t for k, t in data.items() if k not in train_data_keys}
 
 if __name__ == '__main__':
-    print('Graph statistics: (total {} graphs)'.format(len(data)))
-    print('{:15} {:>10} {:>10}'.format('NAME', '#NODES', '#EDGES'))
-    for k, (g, ts) in data.items():
-        print('{:15} {:>10} {:>10}'.format(k, g.num_nodes(), g.num_edges()))
+    # print('Graph statistics: (total {} graphs)'.format(len(data)))
+    # print('{:15} {:>10} {:>10}'.format('NAME', '#NODES', '#EDGES'))
+    # for k, (g, ts) in data.items():
+    #     print('{:15} {:>10} {:>10}'.format(k, g.num_nodes(), g.num_edges()))
+    for dic in [data_train, data_test]:
+        for k, (g, ts) in dic.items():
+            print('\\texttt{{{}}},{},{},{},{},{},{}'.format(k.replace('_', '\_'), g.num_nodes(), g.num_edges('net_out'), g.num_edges('cell_out'), len(ts['topo']), len(ts['po_nodes']), len(ts['endpoints'])))

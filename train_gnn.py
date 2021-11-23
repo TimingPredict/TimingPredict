@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import dgl
 import torch.nn.functional as F
 import random
@@ -14,8 +15,11 @@ from model import TimingGCN
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    '--save_to', type=str,
-    help='If specified, the log and model would be saved to that checkpoint directory')
+    '--test_iter', type=int,
+    help='If specified, test a saved model instead of training')
+parser.add_argument(
+    '--checkpoint', type=str,
+    help='If specified, the log and model would be saved to/loaded from that checkpoint directory')
 parser.set_defaults(netdelay=True, celldelay=True, groundtruth=True)
 parser.add_argument(
     '--no_netdelay', dest='netdelay', action='store_false',
@@ -30,29 +34,53 @@ parser.add_argument(
 model = TimingGCN()
 model.cuda()
 
+def compute_wns(g, ts, at):
+    at = at[ts['endpoints']].reshape(-1, 2, 2)
+    rat = g.ndata['n_rats'][ts['endpoints']].reshape(-1, 2, 2)
+    early_diff = at[:, 0, :] - rat[:, 0, :]
+    late_diff = rat[:, 1, :] - at[:, 1, :]
+    return early_diff, late_diff, torch.min(early_diff).item(), torch.min(late_diff).item()
+
 def test(model):    # at
     model.eval()
     with torch.no_grad():
+        def test_dict(data):
+            for k, (g, ts) in data.items():
+                torch.cuda.synchronize()
+                time_s = time.time()
+                pred = model(g, ts, groundtruth=False)[2][:, :4]
+                torch.cuda.synchronize()
+                time_t = time.time()
+                truth = g.ndata['n_atslew'][:, :4]
+                r2 = r2_score(pred.cpu().numpy().reshape(-1),
+                              truth.cpu().numpy().reshape(-1))
+                se, sl, wns_e, wns_l = compute_wns(g, ts, pred)
+                se_truth, sl_truth, wns_e_truth, wns_l_truth = compute_wns(g, ts, truth)
+                print('{:15} r2 {:1.5f}, wns {:2.5f} ({:2.5f}) {:2.5f} ({:2.5f}), time {:2.5f}'.format(k, r2, wns_e, wns_e_truth, wns_l, wns_l_truth, time_t - time_s))
+                
+                np.savez('checkpoints/18_slacksdump/{}.npz'.format(k), se.cpu().numpy(), sl.cpu().numpy(), se_truth.cpu().numpy(), sl_truth.cpu().numpy())
+                # print('{}'.format(time_t - time_s + ts['topo_time']))
+                
         print('======= Training dataset ======')
-        for k, (g, ts) in data_train.items():
-            torch.cuda.synchronize()
-            time_s = time.time()
-            pred = model(g, ts, groundtruth=False)[2][:, :4]
-            torch.cuda.synchronize()
-            time_t = time.time()
-            truth = g.ndata['n_atslew'][:, :4]
-            print(k, r2_score(pred.cpu().numpy().reshape(-1),
-                              truth.cpu().numpy().reshape(-1)), '\ttime', time_t - time_s)
+        test_dict(data_train)
         print('======= Test dataset ======')
-        for k, (g, ts) in data_test.items():
-            torch.cuda.synchronize()
-            time_s = time.time()
-            pred = model(g, ts, groundtruth=False)[2][:, :4]
-            torch.cuda.synchronize()
-            time_t = time.time()
-            truth = g.ndata['n_atslew'][:, :4]
-            print(k, r2_score(pred.cpu().numpy().reshape(-1),
-                              truth.cpu().numpy().reshape(-1)), '\ttime', time_t - time_s)
+        test_dict(data_test)
+
+def test_netdelay(model):    # net delay
+    model.eval()
+    with torch.no_grad():
+        def test_dict(data):
+            for k, (g, ts) in data.items():
+                pred = model(g, ts, groundtruth=False)[0]
+                truth = g.ndata['n_net_delays_log']
+                r2 = r2_score(pred.cpu().numpy().reshape(-1),
+                              truth.cpu().numpy().reshape(-1))
+                print('{:15} {}'.format(k, r2))
+                
+        print('======= Training dataset ======')
+        test_dict(data_train)
+        print('======= Test dataset ======')
+        test_dict(data_test)
 
 def train(model, args):
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
@@ -116,8 +144,8 @@ def train(model, args):
                     test_loss_tot_ats_prop / len(data_test)))
 
             if e == 0 or e % 200 == 199 or (e > 6000 and test_loss_tot_ats_prop / len(data_test) < 6):
-                if args.save_to:
-                    save_path = './checkpoints/{}/{}.pth'.format(args.save_to, e)
+                if args.checkpoint:
+                    save_path = './checkpoints/{}/{}.pth'.format(args.checkpoint, e)
                     torch.save(model.state_dict(), save_path)
                     print('saved model to', save_path)
                 try:
@@ -128,16 +156,20 @@ def train(model, args):
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    if args.save_to:
-        print('saving logs and models to ./checkpoints/{}'.format(args.save_to))
-        os.makedirs('./checkpoints/{}'.format(args.save_to))  # exist not ok
-        stdout_f = './checkpoints/{}/stdout.log'.format(args.save_to)
-        stderr_f = './checkpoints/{}/stderr.log'.format(args.save_to)
-        with tee.StdoutTee(stdout_f), tee.StderrTee(stderr_f):
-            train(model, args)
-    else:
-        print('No save_to is specified. abandoning all model checkpoints and logs')
-        train(model, args)
+    if args.test_iter:
+        assert args.checkpoint, 'no checkpoint dir specified'
+        model.load_state_dict(torch.load('./checkpoints/{}/{}.pth'.format(args.checkpoint, args.test_iter)))
+        test(model)
         
-    # model.load_state_dict(torch.load('./checkpoints/08_atcd_specul/11799.pth'))
-    # test(model)
+    else:
+        if args.checkpoint:
+            print('saving logs and models to ./checkpoints/{}'.format(args.checkpoint))
+            os.makedirs('./checkpoints/{}'.format(args.checkpoint))  # exist not ok
+            stdout_f = './checkpoints/{}/stdout.log'.format(args.checkpoint)
+            stderr_f = './checkpoints/{}/stderr.log'.format(args.checkpoint)
+            with tee.StdoutTee(stdout_f), tee.StderrTee(stderr_f):
+                train(model, args)
+        else:
+            print('No checkpoint is specified. abandoning all model checkpoints and logs')
+            train(model, args)
+

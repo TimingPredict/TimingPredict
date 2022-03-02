@@ -34,13 +34,6 @@ parser.add_argument(
 model = TimingGCN()
 model.cuda()
 
-def compute_wns(g, ts, at):
-    at = at[ts['endpoints']].reshape(-1, 2, 2)
-    rat = g.ndata['n_rats'][ts['endpoints']].reshape(-1, 2, 2)
-    early_diff = at[:, 0, :] - rat[:, 0, :]
-    late_diff = rat[:, 1, :] - at[:, 1, :]
-    return early_diff, late_diff, torch.min(early_diff).item(), torch.min(late_diff).item()
-
 def test(model):    # at
     model.eval()
     with torch.no_grad():
@@ -54,11 +47,8 @@ def test(model):    # at
                 truth = g.ndata['n_atslew'][:, :4]
                 r2 = r2_score(pred.cpu().numpy().reshape(-1),
                               truth.cpu().numpy().reshape(-1))
-                se, sl, wns_e, wns_l = compute_wns(g, ts, pred)
-                se_truth, sl_truth, wns_e_truth, wns_l_truth = compute_wns(g, ts, truth)
-                print('{:15} r2 {:1.5f}, wns {:2.5f} ({:2.5f}) {:2.5f} ({:2.5f}), time {:2.5f}'.format(k, r2, wns_e, wns_e_truth, wns_l, wns_l_truth, time_t - time_s))
+                print('{:15} r2 {:1.5f}, time {:2.5f}'.format(k, r2, time_t - time_s))
                 
-                np.savez('checkpoints/18_slacksdump/{}.npz'.format(k), se.cpu().numpy(), sl.cpu().numpy(), se_truth.cpu().numpy(), sl_truth.cpu().numpy())
                 # print('{}'.format(time_t - time_s + ts['topo_time']))
                 
         print('======= Training dataset ======')
@@ -160,6 +150,7 @@ if __name__ == '__main__':
         assert args.checkpoint, 'no checkpoint dir specified'
         model.load_state_dict(torch.load('./checkpoints/{}/{}.pth'.format(args.checkpoint, args.test_iter)))
         test(model)
+        test_netdelay(model)
         
     else:
         if args.checkpoint:

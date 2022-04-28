@@ -2,12 +2,12 @@
 This is the official open source repository for "A Timing Engine Inspired Graph Neural Network Model for Pre-Routing Slack Prediction" (DAC 2022).
 
 ## Dataset
-Please refer to https://github.com/TimingPredict/Dataset for download instructions and documentation.
+Please refer to [our Dataset repo](https://github.com/TimingPredict/Dataset) for download instructions and documentation.
 
 ## Usage
 First, download the dataset and extract to `<repo root>/data/`.
 
-Then, download our pre-trained model [here](https://disk.pku.edu.cn:443/link/2955DDB88C64B783A9A0B93BCCE21B87) and put it under `<repo root>/checkpoints/08_atcd_specul/15799.pth`.
+Then, download our pre-trained weight [here](https://disk.pku.edu.cn:443/link/2955DDB88C64B783A9A0B93BCCE21B87) or [here](https://cloud.guozz.cn/s/nRtq) or [here](https://drive.google.com/file/d/1lrr4qFlpkdjQRZjIEb5bGEHfC5FJWG61/view?usp=sharing) and put it under `<repo root>/checkpoints/08_atcd_specul/15799.pth`. (Note that Google drive is showing it as an archive but please download it as a whole.)
 
 Finally, run the following command:
 

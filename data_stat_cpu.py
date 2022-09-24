@@ -21,13 +21,5 @@ train_data_keys = random.sample(available_data, 14)
 data_train = {k: g for k, g in data.items() if k in train_data_keys}
 data_test = {k: g for k, g in data.items() if k not in train_data_keys}
 
-def ensemble(data_dict):
-    x = np.concatenate([x for x, y in data_dict.values()], axis=0)
-    y = np.concatenate([y for x, y in data_dict.values()], axis=0)
-    return x, y
-
-data_train_ensemble = ensemble(data_train)
-data_test_ensemble = ensemble(data_train)
-
 if __name__ == '__main__':
     print('Netstat total {} benchmarks'.format(len(data)))

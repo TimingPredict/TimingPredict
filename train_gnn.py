@@ -45,6 +45,10 @@ def test(model):    # at
                 torch.cuda.synchronize()
                 time_t = time.time()
                 truth = g.ndata['n_atslew'][:, :4]
+                # notice: there is a typo in the parameter order of r2 calculator.
+                # please see https://github.com/TimingPredict/TimingPredict/issues/7.
+                # for exact reproducibility of experiments in paper, we will not directly fix the typo here.
+                # the experimental conclusions are not affected.
                 r2 = r2_score(pred.cpu().numpy().reshape(-1),
                               truth.cpu().numpy().reshape(-1))
                 print('{:15} r2 {:1.5f}, time {:2.5f}'.format(k, r2, time_t - time_s))
@@ -63,6 +67,10 @@ def test_netdelay(model):    # net delay
             for k, (g, ts) in data.items():
                 pred = model(g, ts, groundtruth=False)[0]
                 truth = g.ndata['n_net_delays_log']
+                # notice: there is a typo in the parameter order of r2 calculator.
+                # please see https://github.com/TimingPredict/TimingPredict/issues/7.
+                # for exact reproducibility of experiments in paper, we will not directly fix the typo here.
+                # the experimental conclusions are not affected.
                 r2 = r2_score(pred.cpu().numpy().reshape(-1),
                               truth.cpu().numpy().reshape(-1))
                 print('{:15} {}'.format(k, r2))

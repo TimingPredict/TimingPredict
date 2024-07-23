@@ -10,8 +10,6 @@ import os
 from sklearn.metrics import r2_score
 import tee
 
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
 from data_graph import data_train, data_test
 from model import TimingGCN

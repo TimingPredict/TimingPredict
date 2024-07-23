@@ -10,6 +10,9 @@ import os
 from sklearn.metrics import r2_score
 import tee
 
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
+
 from data_graph import data_train, data_test
 from model import TimingGCN
 
@@ -33,6 +36,44 @@ parser.add_argument(
 
 model = TimingGCN()
 model.cuda()
+
+
+
+def mpgd(y_1,y_2,th=0.005):
+    diff = torch.abs(y_1-y_2)/torch.max(y_2)
+    #idx = diff > th 
+    #count = torch.zeros_like(y_1)
+    #de=torch.ones_like(y_1)
+    #count[idx]=1.0
+    #per = torch.sum(count)/torch.sum(de)
+    #print("amse percentage: %.2f"%per)
+    try:
+        loss= F.mse_loss(y_1[diff>th],y_2[diff>th])
+    except:
+        loss= F.mse_loss(y_1,y_2)
+    
+    return loss
+
+def shrinkage(x,y):
+    num_examples = x.size()[0]
+
+    diff_norms = torch.norm(x.reshape(num_examples,-1) - y.reshape(num_examples,-1), 2, 1)
+    #y_norms = torch.norm(y.reshape(num_examples,-1), self.p, 1)
+    #pseudo_y_norms = torch.ones(num_examples).type('torch.cuda.FloatTensor') *250000.0
+    #y_norms = torch.where(y_norms==0,pseudo_y_norms,y_norms)
+    l = diff_norms 
+
+    loss = torch.square(l) / (1 + torch.exp(10*(0.2 - l)))
+
+
+    return torch.mean(loss)
+
+
+
+#loss_function = shrinkage
+#loss_function = mpgd
+loss_function = F.mse_loss
+
 
 def test(model):    # at
     model.eval()
@@ -92,21 +133,23 @@ def train(model, args):
         
         for k, (g, ts) in random.sample(data_train.items(), batch_size):
             pred_net_delays, pred_cell_delays, pred_atslew = model(g, ts, groundtruth=args.groundtruth)
+            #print(pred_net_delays.shape, pred_cell_delays.shape, pred_atslew.shape)
+            #quit()
             loss_net_delays, loss_cell_delays = 0, 0
 
             if args.netdelay:
-                loss_net_delays = F.mse_loss(pred_net_delays, g.ndata['n_net_delays_log'])
+                loss_net_delays = loss_function(pred_net_delays, g.ndata['n_net_delays_log'])
                 train_loss_tot_net_delays += loss_net_delays.item()
 
             if args.celldelay:
-                loss_cell_delays = F.mse_loss(pred_cell_delays, g.edges['cell_out'].data['e_cell_delays'])
+                loss_cell_delays = loss_function(pred_cell_delays, g.edges['cell_out'].data['e_cell_delays'])
                 train_loss_tot_cell_delays += loss_cell_delays.item()
             else:
                 # Workaround for a dgl bug...
                 # It seems that if some forward propagation channel is not used in backward graph, the GPU memory would BOOM. so we just create a fake gradient channel for this cell delay fork and make sure it does not contribute to gradient by *0.
                 loss_cell_delays = torch.sum(pred_cell_delays) * 0.0
             
-            loss_ats = F.mse_loss(pred_atslew, g.ndata['n_atslew'])
+            loss_ats = loss_function(pred_atslew, g.ndata['n_atslew'])
             train_loss_tot_ats += loss_ats.item()
             
             (loss_net_delays + loss_cell_delays + loss_ats).backward()
@@ -141,15 +184,16 @@ def train(model, args):
                     test_loss_tot_ats / len(data_test),
                     test_loss_tot_ats_prop / len(data_test)))
 
-            if e == 0 or e % 200 == 199 or (e > 6000 and test_loss_tot_ats_prop / len(data_test) < 6):
+            if False:
+            #if e%1000 == 99 or (e > 6000 and test_loss_tot_ats_prop / len(data_test) < 6):
                 if args.checkpoint:
                     save_path = './checkpoints/{}/{}.pth'.format(args.checkpoint, e)
                     torch.save(model.state_dict(), save_path)
                     print('saved model to', save_path)
                 try:
                     test(model)
-                except ValueError as e:
-                    print(e)
+                except ValueError as err:
+                    print(err)
                     print('Error testing, but ignored')
 
 if __name__ == '__main__':
